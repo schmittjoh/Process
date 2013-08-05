@@ -13,6 +13,7 @@ namespace Symfony\Component\Process;
 
 use Symfony\Component\Process\Exception\InvalidArgumentException;
 use Symfony\Component\Process\Exception\LogicException;
+use Symfony\Component\Process\Exception\ProcessFailedException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Exception\RuntimeException;
 
@@ -62,6 +63,7 @@ class Process
     private $incrementalOutputOffset;
     private $incrementalErrorOutputOffset;
     private $tty;
+    private $pty;
 
     private $fileHandles;
     private $readBytes;
@@ -119,6 +121,33 @@ class Process
     );
 
     /**
+     * Returns whether PTY is supported on the current operating system.
+     *
+     * @return Boolean
+     */
+    public static function isPtySupported()
+    {
+        static $result;
+
+        if (null !== $result) {
+            return $result;
+        }
+
+        if (defined('PHP_WINDOWS_VERSION_BUILD')) {
+            return $result = false;
+        }
+
+        $proc = @proc_open('echo 1', array(array('pty'), array('pty'), array('pty')), $pipes);
+        if (is_resource($proc)) {
+            proc_close($proc);
+
+            return $result = true;
+        }
+
+        return $result = false;
+    }
+
+    /**
      * Constructor.
      *
      * @param string  $commandline The command line to run
@@ -156,6 +185,7 @@ class Process
         }
         $this->stdin = $stdin;
         $this->setTimeout($timeout);
+        $this->pty = false;
         $this->enhanceWindowsCompatibility = true;
         $this->enhanceSigchildCompatibility = !defined('PHP_WINDOWS_VERSION_BUILD') && $this->isSigchildEnabled();
         $this->options = array_replace(array('suppress_errors' => true, 'binary_pipes' => true), $options);
@@ -205,6 +235,25 @@ class Process
         $this->start($callback);
 
         return $this->wait($callback);
+    }
+
+    /**
+     * Runs the process.
+     *
+     * This is identical to run() except that an exception is thrown if the process
+     * exits with a non-zero exit code.
+     *
+     * @param callable|null $callback
+     *
+     * @return self
+     */
+    public function mustRun($callback = null)
+    {
+        if (0 !== $this->run($callback)) {
+            throw new ProcessFailedException($this);
+        }
+
+        return $this;
     }
 
     /**
@@ -916,6 +965,30 @@ class Process
     }
 
     /**
+     * Sets PTY mode.
+     *
+     * @param Boolean $bool
+     *
+     * @return self
+     */
+    public function setPty($bool)
+    {
+        $this->pty = (Boolean) $bool;
+
+        return $this;
+    }
+
+    /**
+     * Returns PTY state.
+     *
+     * @return Boolean
+     */
+    public function isPty()
+    {
+        return $this->pty;
+    }
+
+    /**
      * Gets the working directory.
      *
      * @return string The current working directory
@@ -1136,6 +1209,12 @@ class Process
                 array('file', '/dev/tty', 'r'),
                 array('file', '/dev/tty', 'w'),
                 array('file', '/dev/tty', 'w'),
+            );
+        } elseif ($this->pty && self::isPtySupported()) {
+            $descriptors = array(
+                array('pty'),
+                array('pty'),
+                array('pty'),
             );
         } else {
            $descriptors = array(
